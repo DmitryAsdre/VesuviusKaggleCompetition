@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 from torch.optim import Adam, SGD, AdamW
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CyclicLR
 
 from utils.dataset_v import VesuviusDataset, VesuviusDatasetMixUP
 from utils.image_loaders import get_train_valid_dataset, read_images_mask_middle_layers
@@ -35,13 +36,13 @@ class CFG:
     
     PATH_TO_DS = '../data_4_folds'
     PATH_TO_SAVE = '../models'
-    exp_name = 'triple_mit_l1_9_slices_from_the_middle_4_folds_mixup'
+    exp_name = 'triple_mit_l1_9_slices_from_the_middle_4_folds_mixup_small_augs'
     log_dir = '../triple_mit_l1_9_slices_from_the_middle_4_folds_mixup_tensorboard_logging'
     chans_idxs = [28, 29, 30, 31, 32, 33, 34, 35, 36]
     in_chans = len(chans_idxs)
     tile_size = 448
     stride_valid = 224
-    stride_train = 200
+    stride_train = 224
     
     train_batch_size = 12
     valid_batch_size = train_batch_size*2
@@ -60,13 +61,13 @@ class CFG:
     
     max_norm = 1e3
     warmup_factor = 10
-    lr = 1e-4 / warmup_factor
-    epochs = 1#45
+    lr = 2e-5
+    epochs = 35
     
     #=============== mixup ===================
-    alpha = 0.3
-    beta = 0.3
-    p_mixup = 0.5
+    alpha = 0.4
+    beta = 0.4
+    p_mixup = 0.3
     
     # ============== augmentation =============
     transformations = {
@@ -83,10 +84,10 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
                 ], p=0.4),
-        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-        A.CoarseDropout(max_holes=1, max_width=int(tile_size * 0.3), max_height=int(tile_size * 0.3), 
-                        mask_fill_value=0, p=0.5),
-        # A.Cutout(max_h_size=int(size * 0.6),
+        #A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+        #A.CoarseDropout(max_holes=1, max_width=int(tile_size * 0.3), max_height=int(tile_size * 0.3), 
+        #                mask_fill_value=0, p=0.5),
+        #A.Cutout(max_h_size=int(size * 0.6),
         #          max_w_size=int(size * 0.6), num_holes=1, p=1.0),
         A.Normalize(
             mean= [0] * in_chans,
@@ -226,6 +227,8 @@ def train_on_fold(valid_img, writer):
     
     optimizer = AdamW(model.parameters(), lr=CFG.lr)
     scheduler = get_scheduler(CFG, optimizer)
+    #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
+    #CyclicLR(optimizer, base_lr=5e-6, max_lr=8e-4, last_epoch=CFG.epochs)
     
     for epoch in range(CFG.epochs):
         
@@ -235,6 +238,7 @@ def train_on_fold(valid_img, writer):
                 valid_dataloader, model, criterion, valid_mask_gt.shape, CFG.device)
         
         scheduler_step(scheduler, epoch)
+        #scheduler.step(epoch=epoch)
         
         best_dice, best_th, ths = calc_cv(valid_mask_gt, mask_pred)
         

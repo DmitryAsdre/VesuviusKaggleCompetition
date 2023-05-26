@@ -55,9 +55,6 @@ class VesuviusDatasetMixUP(Dataset):
         image = self.images[idx]
         label = self.labels[idx]
         
-                     
-        
-        
         
         if self.transform:
             data = self.transform(image=image, mask=label)
