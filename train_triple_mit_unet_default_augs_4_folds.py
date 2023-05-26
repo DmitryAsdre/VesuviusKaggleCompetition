@@ -18,11 +18,9 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 from torch.optim import Adam, SGD, AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CyclicLR
 
-from utils.dataset_v import VesuviusDataset, VesuviusDatasetMixUP
-from utils.image_loaders import get_train_valid_dataset, read_images_mask_middle_layers
-from utils.image_loaders import get_train_valid_dataset_4_folds
+from utils.dataset_v import VesuviusDataset
+from utils.image_loaders import get_train_valid_dataset_4_folds, read_images_mask_middle_layers
 from utils.set_seed import set_seed
 from utils.metrics import calc_cv
 
@@ -35,39 +33,29 @@ class CFG:
     device = 'cuda:0'
     
     PATH_TO_DS = '../data_4_folds'
-    PATH_TO_SAVE = '../models'
-    exp_name = 'triple_mit_l1_9_slices_from_the_middle_4_folds_mixup_small_augs'
-    log_dir = '../triple_mit_l1_9_slices_from_the_middle_4_folds_mixup_tensorboard_logging'
+    PATH_TO_SAVE = '../models/'
+    exp_name = 'triple_mit_l1_9_slices_from_the_middle_default_augmentations_4_folds'
     chans_idxs = [28, 29, 30, 31, 32, 33, 34, 35, 36]
     in_chans = len(chans_idxs)
     tile_size = 448
-    stride_valid = 224
-    stride_train = 224
+    stride = 224
     
     train_batch_size = 12
     valid_batch_size = train_batch_size*2
-    num_workers = 6
+    num_workers = 4
     max_grad_norm = 1_000
     use_amp = True
     
     backbone_name = 'mit_b1'
     encoder_weights = 'imagenet'
     activation = None
-
     
-    
-    #criterion = smp.losses.SoftCrossEntropyLoss()
     criterion = smp.losses.SoftBCEWithLogitsLoss()
     
     max_norm = 1e3
     warmup_factor = 10
-    lr = 2e-5
+    lr = 1e-4 / warmup_factor
     epochs = 35
-    
-    #=============== mixup ===================
-    alpha = 0.4
-    beta = 0.4
-    p_mixup = 0.3
     
     # ============== augmentation =============
     transformations = {
@@ -84,10 +72,10 @@ class CFG:
                 A.GaussianBlur(),
                 A.MotionBlur(),
                 ], p=0.4),
-        #A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
-        #A.CoarseDropout(max_holes=1, max_width=int(tile_size * 0.3), max_height=int(tile_size * 0.3), 
-        #                mask_fill_value=0, p=0.5),
-        #A.Cutout(max_h_size=int(size * 0.6),
+        A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5),
+        A.CoarseDropout(max_holes=1, max_width=int(tile_size * 0.3), max_height=int(tile_size * 0.3), 
+                        mask_fill_value=0, p=0.5),
+        # A.Cutout(max_h_size=int(size * 0.6),
         #          max_w_size=int(size * 0.6), num_holes=1, p=1.0),
         A.Normalize(
             mean= [0] * in_chans,
@@ -140,7 +128,6 @@ def train_fn(train_loader, model, criterion, optimizer, device):
     for step, (images, labels, _) in tqdm(enumerate(train_loader), total=len(train_loader)):
         images = images.to(device)
         labels = labels.to(device)
-        print(labels.dtype)
         batch_size = labels.size(0)
 
         with autocast(CFG.use_amp):
@@ -193,19 +180,15 @@ def criterion(y_pred, y_true):
     return CFG.criterion(y_pred, y_true)
 
 
-def train_on_fold(valid_img, writer):
-    if CFG.PATH_TO_SAVE:
-        CUR_PATH_TO_SAVE = os.path.join(CFG.PATH_TO_SAVE, CFG.exp_name, f'fold_{valid_img}')    
-        os.makedirs(CUR_PATH_TO_SAVE, exist_ok=True)
-    else:
-        CUR_PATH_TO_SAVE = None
-        
+def train_on_fold(valid_img, writer):    
+    CUR_PATH_TO_SAVE = os.path.join(CFG.PATH_TO_SAVE, CFG.exp_name, f'fold_{valid_img}')    
+    os.makedirs(CUR_PATH_TO_SAVE, exist_ok=True)
     
     read_images_mask = partial(read_images_mask_middle_layers, PATH_TO_DS = CFG.PATH_TO_DS, chans_idxs=CFG.chans_idxs, tile_size=CFG.tile_size)
-    train_images, train_masks, valid_images, valid_masks, valid_xyxys = get_train_valid_dataset_4_folds(valid_img, read_images_mask, CFG.tile_size, CFG.stride_train, CFG.stride_valid)
+    train_images, train_masks, valid_images, valid_masks, valid_xyxys = get_train_valid_dataset_4_folds(valid_img, read_images_mask, CFG.tile_size, CFG.stride, CFG.stride)
     
-    train_dataset = VesuviusDatasetMixUP(train_images, train_masks, None, A.Compose(CFG.transformations['train']), alpha=CFG.alpha, beta=CFG.beta, p_mixup=CFG.p_mixup)
-    valid_dataset = VesuviusDatasetMixUP(valid_images, valid_masks, valid_xyxys, A.Compose(CFG.transformations['valid']), p_mixup=None)
+    train_dataset = VesuviusDataset(train_images, train_masks, None, A.Compose(CFG.transformations['train']))
+    valid_dataset = VesuviusDataset(valid_images, valid_masks, valid_xyxys, A.Compose(CFG.transformations['valid']))
 
     train_dataloader = DataLoader(train_dataset, 
                               batch_size = CFG.train_batch_size,
@@ -228,8 +211,6 @@ def train_on_fold(valid_img, writer):
     
     optimizer = AdamW(model.parameters(), lr=CFG.lr)
     scheduler = get_scheduler(CFG, optimizer)
-    #scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
-    #CyclicLR(optimizer, base_lr=5e-6, max_lr=8e-4, last_epoch=CFG.epochs)
     
     for epoch in range(CFG.epochs):
         
@@ -239,14 +220,14 @@ def train_on_fold(valid_img, writer):
                 valid_dataloader, model, criterion, valid_mask_gt.shape, CFG.device)
         
         scheduler_step(scheduler, epoch)
-        #scheduler.step(epoch=epoch)
         
         best_dice, best_th, ths = calc_cv(valid_mask_gt, mask_pred)
         
         print(f'Avg loss - {loss}', f"Avg val loss - {avg_val_loss}")
         print("THs", ths)
         print(f"best_th - {best_th}")
-        print(f'best dice - {best_dice}')
+        print(f'best dice - {best_dice}')           
+        
         
         if writer:
             for th in ths:
@@ -272,7 +253,7 @@ def train_on_fold(valid_img, writer):
 
 if __name__ == "__main__":
     comment = f'exp_name = {CFG.exp_name}, batch_size = {CFG.train_batch_size}, lr = {CFG.lr}'
-    writer = SummaryWriter(comment=comment, log_dir=CFG.log_dir)
+    writer = SummaryWriter(comment=comment)
     train_on_fold(1, writer)
     train_on_fold(2, writer)
     train_on_fold(3, writer)
