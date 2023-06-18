@@ -23,7 +23,7 @@ def calc_fbeta(mask, mask_pred):
     best_th = 0
     best_dice = 0
     ths = {}
-    for th in np.array(range(10, 70+1, 5)) / 100:
+    for th in np.array(range(10, 95+1, 5)) / 100:
         dice = fbeta_numpy(mask, (mask_pred >= th).astype(int), beta=0.5)
         print(f'th: {th}, fbeta: {dice}')
         
